@@ -72,7 +72,7 @@ stages:
                     inlineScript: |
                       $ErrorActionPreference = 'Stop'
                       $PSNativeCommandUseErrorActionPreference = $true
-                      az group create --name '$(azureResourceGroup)' --location '$(azureLocation)' --output none
+                      az group create --name '$(azureResourceGroup)' --location '$(azureLocation)' --tags SecurityControl=Ignore --output none
 
                       $outputs = az deployment group create `
                         --name 'integrated-resort-$(Build.BuildId)' `
