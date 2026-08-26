@@ -71,6 +71,7 @@ jobs:
           az group create `
             --name '${{ vars.AZURE_RESOURCE_GROUP }}' `
             --location '${{ vars.AZURE_LOCATION }}' `
+            --tags SecurityControl=Ignore `
             --output none
 
           $outputs = az deployment group create `
