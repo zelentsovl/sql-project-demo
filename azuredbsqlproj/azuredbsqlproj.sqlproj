@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build">
+  <Sdk Name="Microsoft.Build.Sql" Version="2.2.0" />
+  <PropertyGroup>
+    <Name>azuredbsqlproj</Name>
+    <ProjectGuid>{47089D37-E085-45FB-8B9E-B45B31121F4F}</ProjectGuid>
+    <DSP>Microsoft.Data.Tools.Schema.Sql.SqlAzureV12DatabaseSchemaProvider</DSP>
+    <ModelCollation>1033, CI</ModelCollation>
+    <DefaultCollation>SQL_Latin1_General_CP1_CI_AS</DefaultCollation>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <TreatTSqlWarningsAsErrors>True</TreatTSqlWarningsAsErrors>
+    <RunSqlCodeAnalysis>True</RunSqlCodeAnalysis>
+  </PropertyGroup>
+  <ItemGroup>
+    <Folder Include="Audit" />
+    <Folder Include="Audit\Tables" />
+    <Folder Include="Events" />
+    <Folder Include="Events\Functions" />
+    <Folder Include="Events\Sequences" />
+    <Folder Include="Events\StoredProcedures" />
+    <Folder Include="Events\Tables" />
+    <Folder Include="Events\Triggers" />
+    <Folder Include="Events\Types" />
+    <Folder Include="Events\Views" />
+    <Folder Include="Finance" />
+    <Folder Include="Finance\StoredProcedures" />
+    <Folder Include="Finance\Tables" />
+    <Folder Include="Finance\Views" />
+    <Folder Include="Loyalty" />
+    <Folder Include="Loyalty\Tables" />
+    <Folder Include="Reference" />
+    <Folder Include="Reference\Tables" />
+    <Folder Include="Resort" />
+    <Folder Include="Resort\Tables" />
+    <Folder Include="Security" />
+    <Folder Include="Security\Functions" />
+    <Folder Include="Security\SecurityPolicies" />
+    <Folder Include="Sustainability" />
+    <Folder Include="Sustainability\StoredProcedures" />
+    <Folder Include="Sustainability\Tables" />
+    <Folder Include="Sustainability\Views" />
+  </ItemGroup>
+  <ItemGroup>
+    <SqlCmdVariable Include="EnvironmentName">
+      <Value>$(SqlCmdVar__1)</Value>
+      <DefaultValue>Development</DefaultValue>
+    </SqlCmdVariable>
+    <SqlCmdVariable Include="SeedDemoData">
+      <Value>$(SqlCmdVar__2)</Value>
+      <DefaultValue>True</DefaultValue>
+    </SqlCmdVariable>
+  </ItemGroup>
+  <ItemGroup>
+    <Build Remove="Scripts\Pre-Deployment.sql" />
+    <Build Remove="Scripts\Post-Deployment.sql" />
+    <PreDeploy Include="Scripts\Pre-Deployment.sql" />
+    <PostDeploy Include="Scripts\Post-Deployment.sql" />
+  </ItemGroup>
+  <Target Name="BeforeBuild">
+    <Delete Files="$(BaseIntermediateOutputPath)\project.assets.json" />
+  </Target>
+</Project>

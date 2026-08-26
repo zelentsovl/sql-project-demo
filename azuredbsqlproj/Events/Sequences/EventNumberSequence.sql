@@ -1,0 +1,5 @@
+CREATE SEQUENCE [Events].[EventNumberSequence]
+    AS BIGINT
+    START WITH 100000
+    INCREMENT BY 1
+    CACHE 50;

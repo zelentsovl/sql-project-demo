@@ -1,0 +1,7 @@
+**/bin/
+**/obj/
+*.dacpac
+*.deployreport.xml
+*.publish.xml.user
+.vs/
+.vscode/settings.json

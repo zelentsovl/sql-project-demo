@@ -1,0 +1,145 @@
+name: Integrated Resort Database
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  SQL_PROJECT: azuredbsqlproj/azuredbsqlproj.sqlproj
+  DACPAC_PATH: azuredbsqlproj/bin/Release/azuredbsqlproj.dacpac
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build DACPAC
+        shell: pwsh
+        run: dotnet build $env:SQL_PROJECT --configuration Release
+
+      - name: Compile Bicep
+        shell: pwsh
+        run: |
+          az bicep build --file infra/main.bicep --stdout | Out-Null
+          az bicep build-params --file infra/environments/development.bicepparam --stdout | Out-Null
+          az bicep build-params --file infra/environments/production.bicepparam --stdout | Out-Null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: integrated-resort-dacpac
+          path: ${{ env.DACPAC_PATH }}
+          if-no-files-found: error
+
+  deploy-development:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: windows-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: integrated-resort-dacpac
+          path: artifacts
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Azure infrastructure
+        id: infrastructure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          az group create `
+            --name '${{ vars.AZURE_RESOURCE_GROUP }}' `
+            --location '${{ vars.AZURE_LOCATION }}' `
+            --output none
+
+          $outputs = az deployment group create `
+            --name "integrated-resort-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" `
+            --resource-group '${{ vars.AZURE_RESOURCE_GROUP }}' `
+            --parameters infra/environments/development.bicepparam `
+            --parameters administratorLogin='${{ vars.AZURE_PRINCIPAL_NAME }}' `
+                         administratorObjectId='${{ vars.AZURE_PRINCIPAL_OBJECT_ID }}' `
+            --query properties.outputs `
+            --output json | ConvertFrom-Json
+
+          "databaseName=$($outputs.databaseName.value)" >> $env:GITHUB_OUTPUT
+          "sqlServerFqdn=$($outputs.sqlServerFullyQualifiedDomainName.value)" >> $env:GITHUB_OUTPUT
+          "sqlServerName=$($outputs.sqlServerName.value)" >> $env:GITHUB_OUTPUT
+
+      - name: Install deployment tools
+        shell: pwsh
+        run: |
+          dotnet tool install --global Microsoft.SqlPackage
+          Install-Module SqlServer -Scope CurrentUser -Force -AllowClobber
+
+      - name: Publish DACPAC and run smoke test
+        shell: pwsh
+        env:
+          DATABASE_NAME: ${{ steps.infrastructure.outputs.databaseName }}
+          SQL_SERVER_FQDN: ${{ steps.infrastructure.outputs.sqlServerFqdn }}
+          SQL_SERVER_NAME: ${{ steps.infrastructure.outputs.sqlServerName }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $firewallRuleName = "github-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $runnerIp = (Invoke-RestMethod -Uri 'https://api.ipify.org').Trim()
+
+          try {
+            az sql server firewall-rule create `
+              --resource-group '${{ vars.AZURE_RESOURCE_GROUP }}' `
+              --server $env:SQL_SERVER_NAME `
+              --name $firewallRuleName `
+              --start-ip-address $runnerIp `
+              --end-ip-address $runnerIp `
+              --output none
+
+            $accessToken = az account get-access-token `
+              --resource 'https://database.windows.net/' `
+              --query accessToken `
+              --output tsv
+
+            sqlpackage `
+              /Action:Publish `
+              /SourceFile:"artifacts/azuredbsqlproj.dacpac" `
+              /TargetServerName:$env:SQL_SERVER_FQDN `
+              /TargetDatabaseName:$env:DATABASE_NAME `
+              /AccessToken:$accessToken `
+              /p:BlockOnPossibleDataLoss=True `
+              /p:DropObjectsNotInSource=False `
+              /v:EnvironmentName=Development `
+              /v:SeedDemoData=True
+
+            Invoke-Sqlcmd `
+              -ServerInstance $env:SQL_SERVER_FQDN `
+              -Database $env:DATABASE_NAME `
+              -AccessToken $accessToken `
+              -InputFile tests/SmokeTest.sql `
+              -AbortOnError
+          }
+          finally {
+            az sql server firewall-rule delete `
+              --resource-group '${{ vars.AZURE_RESOURCE_GROUP }}' `
+              --server $env:SQL_SERVER_NAME `
+              --name $firewallRuleName `
+              --output none 2>$null
+          }

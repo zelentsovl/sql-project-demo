@@ -1,0 +1,1 @@
+PRINT N'Preparing to deploy IntegratedResort.Database to $(EnvironmentName).';
