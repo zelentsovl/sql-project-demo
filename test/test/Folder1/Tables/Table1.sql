@@ -1,0 +1,4 @@
+CREATE TABLE [Folder1].[Table1]
+(
+  [Id] INT NOT NULL PRIMARY KEY
+)

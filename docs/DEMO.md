@@ -1,4 +1,4 @@
-# Integrated Resort Database — Demo Script (20–25 min)
+# Integrated Resort Database — Demo Script (25–30 min)
 
 A guided walkthrough of the repository, with the spotlight on the **SQL Database Project** (`.sqlproj`). The infrastructure and pipelines are covered briefly; the last segment is a **live Azure DevOps demo** where we add a new schema object and watch it deploy.
 
@@ -14,10 +14,11 @@ A guided walkthrough of the repository, with the spotlight on the **SQL Database
 | # | Segment | Time |
 | --- | --- | --- |
 | 1 | Repository tour (light: infra + pipelines) | 3 min |
-| 2 | The SQL project: structure & object definitions | 7 min |
-| 3 | Build configuration & the DACPAC | 4 min |
-| 4 | Deployment configuration (SqlCmd vars, pre/post-deploy, publish options) | 4 min |
-| 5 | **Live demo:** add a schema object → commit → push → track ADO deployment | 6 min |
+| 2 | **Authoring a project:** new empty project, import from a database, Schema Compare | 5 min |
+| 3 | The SQL project: structure & object definitions | 7 min |
+| 4 | Build configuration & the DACPAC | 4 min |
+| 5 | Deployment configuration (SqlCmd vars, pre/post-deploy, publish options) | 4 min |
+| 6 | **Live demo:** add a schema object → commit → push → track ADO deployment | 6 min |
 | — | Q&A / closing | 1 min |
 
 ## Before you present (setup checklist)
@@ -26,6 +27,7 @@ A guided walkthrough of the repository, with the spotlight on the **SQL Database
 - Terminal authenticated: `az login` (subscription `ME-MngEnvMCAP012327-leozelentsov-3`).
 - Azure DevOps project open in a browser tab: <https://dev.azure.com/leozelentsov/sql-project-demo>.
 - A clean `git status` on `main`.
+- A working connection to the dev database (`IntegratedResort` on `sql-integratedresort-development-…`, Entra ID auth) for the authoring/compare segment.
 - Optional: have a prior successful pipeline run open to show green history.
 
 ---
@@ -53,11 +55,66 @@ sqlproject2/
 
 ---
 
-## Segment 2 — The SQL project: structure & object definitions (7 min)
+## Segment 2 — Authoring a project: new, import, compare (5 min)
+
+Three common entry points for *getting* a SQL project: starting empty, reverse-engineering an existing database, and reconciling a project against a live database. All three are driven by the **SQL Database Projects** extension in VS Code (Command Palette → `Database Projects: …`) — no Visual Studio required.
+
+### 2a. Create a new empty project
+
+Command Palette → **Database Projects: New Project**.
+
+1. Pick a project type — **SDK-style** (`Microsoft.Build.Sql`), the same style as `azuredbsqlproj`.
+2. Name it and choose a folder.
+3. Choose the target platform (e.g. **Azure SQL Database**) — this sets the `DSP` so the build validates against that surface area.
+
+You get a minimal `.sqlproj` and an empty tree; from here you add object files (one object per file) exactly as in Segment 3. Call out that a new empty SDK project is only a few lines of XML — no per-file `<Build Include>` entries, because the SDK globs `**/*.sql`.
+
+> Talking point: this is how you'd start a greenfield "database as code" project.
+
+### 2b. Import a project from an existing database
+
+The brownfield case: you already have a database and want to bring it under source control.
+
+Command Palette → **Database Projects: Create Project from Database** (or right-click the database in the Object Explorer → **Create Project From Database**).
+
+1. Choose the connection and database — e.g. the live `IntegratedResort`.
+2. Project name & location — e.g. `DatabaseProjectIntegratedResort`.
+3. **Folder structure** — pick `Schema/Object Type` to reproduce the per-schema / per-object-type layout.
+4. **SDK-style** — check it for a `Microsoft.Build.Sql` project.
+
+The extension reverse-engineers every object into `.sql` files. Show the generated tree (e.g. `DatabaseProjectIntegratedResort/Audit/Tables/VenueHistory.sql`, etc.).
+
+> Callout: the extracted T-SQL comes out in the **engine-normalized** form (`[varchar]`, `datediff(day,…)+(1)`, `IN` expanded to `OR`). It's semantically identical to the hand-authored source — a natural segue to Schema Compare.
+
+Under the hood this is the same as `sqlpackage /Action:Extract` → DACPAC → new project. The CLI equivalent:
+
+```powershell
+sqlpackage /Action:Extract `
+  /SourceServerName:sql-integratedresort-development-…database.windows.net `
+  /SourceDatabaseName:IntegratedResort `
+  /UniversalAuthentication:True `
+  /TargetFile:"$env:TEMP\IntegratedResort.dacpac"
+```
+
+### 2c. Compare a project against a live database (Schema Compare)
+
+Right-click the project (or a `.dacpac`) → **Schema Compare**, set the **source** = your project and the **target** = the live database, then **Compare**.
+
+- Results group objects into **added / changed / dropped**, with a side-by-side diff per object.
+- **Generate Script** produces the migration T-SQL; **Apply** pushes changes to the target.
+- Options live behind the **gear icon** — `Ignore Whitespace`, `Ignore Keyword Casing`, `Ignore Comments`, plus an `Include Object Types` tab.
+
+**Expected "false positives" to explain:** computed columns and check constraints often show as *changed* purely because the engine stores a normalized form — e.g. `CONVERT(VARCHAR(20),…)` vs `CONVERT([varchar](20),…)`, `+ 1` vs `+(1)`, or an `IN (…)` list expanded into an `OR` chain. These are **semantically identical** and a publish is a no-op. The ignore options don't cover type-bracketing or `IN`→`OR`, so you either exclude those rows or confirm with a **deploy report** (`sqlpackage /Action:DeployReport`) that no changes are generated.
+
+> Key message: Schema Compare is your **drift-detection** tool — it shows exactly how a live database diverges from the source of truth, in either direction.
+
+---
+
+## Segment 3 — The SQL project: structure & object definitions (7 min)
 
 Open [azuredbsqlproj/azuredbsqlproj.sqlproj](../azuredbsqlproj/azuredbsqlproj.sqlproj).
 
-### 2a. An SDK-style SQL project
+### 3a. An SDK-style SQL project
 
 ```xml
 <Project DefaultTargets="Build">
@@ -76,7 +133,7 @@ Talking points:
 - **`DSP` = SqlAzureV12** — the build validates every object against the **Azure SQL** surface area. If someone writes T-SQL that Azure SQL doesn't support, the build fails — not production.
 - **Globbing** — the SDK automatically includes every `**/*.sql` file. Adding a new object is just adding a file; there's no per-file entry to maintain (contrast with legacy `.sqlproj` files that listed each `.sql`).
 
-### 2b. Organized by schema, not by object type
+### 3b. Organized by schema, not by object type
 
 Scroll to the `<Folder>` list and map it to the tree. Each database schema is a folder, and object types are subfolders:
 
@@ -101,7 +158,7 @@ CREATE SCHEMA [Events]
 
 > Convention: **one object per file**, filename = object name. Reviews become readable diffs; the folder path tells you the schema and object kind at a glance.
 
-### 2c. Declarative object definitions (the core idea)
+### 3c. Declarative object definitions (the core idea)
 
 Open [Events/Tables/EventBooking.sql](../azuredbsqlproj/Events/Tables/EventBooking.sql). This is the heart of the model — highlight how much intent is captured **declaratively**:
 
@@ -126,13 +183,13 @@ Quickly show the range of object types the project supports (open 2–3):
 | Filtered index | [Resort/Indexes/IX_Venue_ActiveProperty.sql](../azuredbsqlproj/Resort/Indexes/IX_Venue_ActiveProperty.sql) |
 | Row-level security policy | [Security/SecurityPolicies/PropertyAccessPolicy.sql](../azuredbsqlproj/Security/SecurityPolicies/PropertyAccessPolicy.sql) |
 
-### 2d. Cross-object references are validated at build
+### 3d. Cross-object references are validated at build
 
 Point out inside `EventBooking.sql` the foreign keys to `[Resort].[Property]`, `[Events].[Organizer]`, and `[Reference].[BookingStatus]`. Because the whole schema is one **model**, the build fails if a referenced table, column, or type doesn't exist — catching broken dependencies before deployment. Show [Security/SecurityPolicies/PropertyAccessPolicy.sql](../azuredbsqlproj/Security/SecurityPolicies/PropertyAccessPolicy.sql), which references a function *and* two tables across schemas — all resolved at build time.
 
 ---
 
-## Segment 3 — Build configuration & the DACPAC (4 min)
+## Segment 4 — Build configuration & the DACPAC (4 min)
 
 ### 3a. Configuration-driven quality gates
 
@@ -169,7 +226,7 @@ Get-Item .\azuredbsqlproj\bin\Release\azuredbsqlproj.dacpac
 
 ---
 
-## Segment 4 — Deployment configuration (4 min)
+## Segment 5 — Deployment configuration (4 min)
 
 Deployment turns the DACPAC into changes on a target database. Three things make it repeatable and safe.
 
@@ -223,7 +280,7 @@ After publish, [tests/SmokeTest.sql](../tests/SmokeTest.sql) runs via the same t
 
 ---
 
-## Segment 5 — Live demo: add a schema object → push → track ADO deployment (6 min)
+## Segment 6 — Live demo: add a schema object → push → track ADO deployment (6 min)
 
 **Story:** the business wants to categorize events. We'll add a new **`Reference.EventCategory`** lookup table, seed it, extend the smoke test, and push to `main`. The Azure DevOps pipeline builds the DACPAC and deploys the new table to Azure SQL.
 
@@ -244,7 +301,7 @@ CREATE TABLE [Reference].[EventCategory]
 );
 ```
 
-> Note there is **nothing to edit in the `.sqlproj`** — the SDK globs the new file automatically. That's the whole point of Segment 2a.
+> Note there is **nothing to edit in the `.sqlproj`** — the SDK globs the new file automatically. That's the whole point of Segment 3a.
 
 ### Step 2 — Seed it (idempotent) in the post-deploy script
 
