@@ -17,7 +17,7 @@ env:
 
 jobs:
   validate:
-    runs-on: self-hosted
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -45,7 +45,7 @@ jobs:
   deploy-development:
     if: github.event_name != 'pull_request'
     needs: validate
-    runs-on: self-hosted
+    runs-on: windows-latest
     environment: development
     steps:
       - uses: actions/checkout@v4
