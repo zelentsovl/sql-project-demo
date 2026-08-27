@@ -53,18 +53,8 @@ stages:
                 - download: current
                   artifact: integrated-resort-dacpac
 
-                - task: UseDotNet@2
-                  inputs:
-                    packageType: sdk
-                    version: 10.x
-
-                - pwsh: |
-                    dotnet tool install --global Microsoft.SqlPackage
-                    Install-Module SqlServer -Scope CurrentUser -Force -AllowClobber
-                  displayName: Install deployment tools
-
                 - task: AzureCLI@2
-                  displayName: Deploy infrastructure and DACPAC
+                  displayName: Deploy Azure infrastructure (Bicep)
                   inputs:
                     azureSubscription: $(azureServiceConnection)
                     scriptType: pscore
@@ -72,6 +62,7 @@ stages:
                     inlineScript: |
                       $ErrorActionPreference = 'Stop'
                       $PSNativeCommandUseErrorActionPreference = $true
+
                       az group create --name '$(azureResourceGroup)' --location '$(azureLocation)' --tags SecurityControl=Ignore --output none
 
                       $outputs = az deployment group create `
@@ -83,48 +74,64 @@ stages:
                         --query properties.outputs `
                         --output json | ConvertFrom-Json
 
-                      $sqlServerName = $outputs.sqlServerName.value
-                      $sqlServerFqdn = $outputs.sqlServerFullyQualifiedDomainName.value
-                      $databaseName = $outputs.databaseName.value
-                      $firewallRuleName = 'ado-$(Build.BuildId)'
-                      $runnerIp = (Invoke-RestMethod -Uri 'https://api.ipify.org').Trim()
+                      Write-Host "##vso[task.setvariable variable=sqlServerName]$($outputs.sqlServerName.value)"
+                      Write-Host "##vso[task.setvariable variable=sqlServerFqdn]$($outputs.sqlServerFullyQualifiedDomainName.value)"
+                      Write-Host "##vso[task.setvariable variable=databaseName]$($outputs.databaseName.value)"
 
-                      try {
-                        az sql server firewall-rule create `
-                          --resource-group '$(azureResourceGroup)' `
-                          --server $sqlServerName `
-                          --name $firewallRuleName `
-                          --start-ip-address $runnerIp `
-                          --end-ip-address $runnerIp `
-                          --output none
+                - task: SqlAzureDacpacDeployment@1
+                  name: previewScript
+                  displayName: Preview database changes (script)
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    AuthenticationType: servicePrincipal
+                    ServerName: $(sqlServerFqdn)
+                    DatabaseName: $(databaseName)
+                    deployType: DacpacTask
+                    DeploymentAction: Script
+                    DacpacFile: $(Pipeline.Workspace)/integrated-resort-dacpac/azuredbsqlproj.dacpac
+                    AdditionalArguments: >-
+                      /p:BlockOnPossibleDataLoss=true
+                      /p:DropObjectsNotInSource=false
+                      /v:EnvironmentName=Development
+                      /v:SeedDemoData=True
+                    IpDetectionMethod: AutoDetect
 
-                        $accessToken = az account get-access-token `
-                          --resource 'https://database.windows.net/' `
-                          --query accessToken `
-                          --output tsv
+                - pwsh: |
+                    $scriptPath = '$(previewScript.SqlDeploymentOutputFile)'
+                    if (Test-Path -Path $scriptPath) {
+                      Write-Host '----- Pending changes to be applied to the database -----'
+                      Get-Content -Path $scriptPath
+                    }
+                    else {
+                      Write-Host "No preview script was generated at '$scriptPath'."
+                    }
+                  displayName: Show pending changes
 
-                        sqlpackage `
-                          /Action:Publish `
-                          /SourceFile:'$(Pipeline.Workspace)/integrated-resort-dacpac/azuredbsqlproj.dacpac' `
-                          /TargetServerName:$sqlServerFqdn `
-                          /TargetDatabaseName:$databaseName `
-                          /AccessToken:$accessToken `
-                          /p:BlockOnPossibleDataLoss=True `
-                          /p:DropObjectsNotInSource=False `
-                          /v:EnvironmentName=Development `
-                          /v:SeedDemoData=True
+                - task: SqlAzureDacpacDeployment@1
+                  displayName: Deploy DACPAC (publish)
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    AuthenticationType: servicePrincipal
+                    ServerName: $(sqlServerFqdn)
+                    DatabaseName: $(databaseName)
+                    deployType: DacpacTask
+                    DeploymentAction: Publish
+                    DacpacFile: $(Pipeline.Workspace)/integrated-resort-dacpac/azuredbsqlproj.dacpac
+                    AdditionalArguments: >-
+                      /p:BlockOnPossibleDataLoss=true
+                      /p:DropObjectsNotInSource=false
+                      /v:EnvironmentName=Development
+                      /v:SeedDemoData=True
+                    IpDetectionMethod: AutoDetect
 
-                        Invoke-Sqlcmd `
-                          -ServerInstance $sqlServerFqdn `
-                          -Database $databaseName `
-                          -AccessToken $accessToken `
-                          -InputFile tests/SmokeTest.sql `
-                          -AbortOnError
-                      }
-                      finally {
-                        az sql server firewall-rule delete `
-                          --resource-group '$(azureResourceGroup)' `
-                          --server $sqlServerName `
-                          --name $firewallRuleName `
-                          --output none 2>$null
-                      }
+                - task: SqlAzureDacpacDeployment@1
+                  displayName: Run smoke test
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    AuthenticationType: servicePrincipal
+                    ServerName: $(sqlServerFqdn)
+                    DatabaseName: $(databaseName)
+                    deployType: SqlTask
+                    SqlFile: tests/SmokeTest.sql
+                    SqlAdditionalArguments: -AbortOnError
+                    IpDetectionMethod: AutoDetect
